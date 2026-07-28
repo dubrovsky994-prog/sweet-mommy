@@ -1,0 +1,5 @@
+{
+  "bot_token": "ВСТАВЬТЕ_ТОКЕН_БОТА_ТОЛЬКО_В_ЛОКАЛЬНЫЙ_max.config.json",
+  "recipient_id": "ID_ПОЛУЧАТЕЛЯ_ИЛИ_ЧАТА",
+  "recipient_type": "chat"
+}

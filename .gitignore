@@ -1,0 +1,8 @@
+max.config.json
+.env*
+!.env.example
+.vercel/
+node_modules/
+*.log
+server-*.txt
+Sweet-Mommy-updated.zip
