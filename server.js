@@ -464,7 +464,7 @@ async function sendMaxOrder(payload, payment) {
   ].join("\n"));
 }
 
-const server = http.createServer(async (req, res) => {
+const requestHandler = async (req, res) => {
   try {
     if (req.method === "GET" && requestedReviewPath(req.url)) {
       const query = new URL(req.url, `http://127.0.0.1:${port}`).searchParams;
@@ -556,14 +556,29 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     json(res, 500, { error: error.message || "Server error" });
   }
-});
+};
 
-server.on("error", (error) => {
+/* server startup is defined below so Vercel can use requestHandler directly */
+/* server.on("error", (error) => {
   if (error.code === "EADDRINUSE") {
     console.log(`Sweet Mommy уже запущен на http://127.0.0.1:${port}`);
     return;
   }
   throw error;
-});
+}); */
 
-server.listen(port, "127.0.0.1", () => console.log(`Sweet Mommy demo: http://127.0.0.1:${port}`));
+// Vercel invokes the exported handler directly. Locally we keep the small
+// Node server so the demo remains launchable with start-demo.bat.
+if (process.env.VERCEL) {
+  module.exports = requestHandler;
+} else {
+  const server = http.createServer(requestHandler);
+  server.on("error", (error) => {
+    if (error.code === "EADDRINUSE") {
+      console.log(`Sweet Mommy уже запущен на http://127.0.0.1:${port}`);
+      return;
+    }
+    throw error;
+  });
+  server.listen(port, "127.0.0.1", () => console.log(`Sweet Mommy demo: http://127.0.0.1:${port}`));
+}
