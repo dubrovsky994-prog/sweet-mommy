@@ -149,8 +149,13 @@ function requestedReviewPath(url) { return (url || "").split("?")[0] === "/api/r
 async function createPayment(payload) {
   const orderId = `SM-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
   const hasYooKassa = process.env.YOO_KASSA_SHOP_ID && process.env.YOO_KASSA_SECRET_KEY && process.env.YOO_KASSA_RETURN_URL;
-  if (!hasYooKassa) return { demo: true, order_id: orderId, status: "pending" };
+  if (!hasYooKassa) {
+    if (process.env.VERCEL) throw new Error("Онлайн-оплата ещё не подключена в ЮKassa. Заказ не создан и деньги не списывались.");
+    return { demo: true, order_id: orderId, status: "pending" };
+  }
   const taxMode = process.env.YOO_KASSA_TAX_MODE || "self_employed";
+  if (!["self_employed", "company"].includes(taxMode)) throw new Error("Проверьте YOO_KASSA_TAX_MODE: self_employed или company");
+  if (taxMode === "company" && !process.env.YOO_KASSA_VAT_CODE) throw new Error("Для режима company укажите проверенный YOO_KASSA_VAT_CODE");
 
   const items = (payload.items || []).map((item) => ({
     description: item.title,
@@ -257,7 +262,11 @@ function readMaxDialogs() {
     return data && typeof data === "object" && !Array.isArray(data) ? data : {};
   } catch { return {}; }
 }
-function writeMaxDialogs(data) { fs.writeFileSync(maxDialogsFile, `${JSON.stringify(data, null, 2)}\n`, "utf8"); }
+function writeMaxDialogs(data) {
+  // Vercel functions have an ephemeral/read-only filesystem. Button payloads
+  // carry the wizard context, so this file is only a local-dev convenience.
+  try { fs.writeFileSync(maxDialogsFile, `${JSON.stringify(data, null, 2)}\n`, "utf8"); } catch {}
+}
 function saveMaxDialog(chatId, value) {
   const dialogs = readMaxDialogs();
   dialogs[String(chatId)] = { ...value, updated_at: new Date().toISOString() };
@@ -346,6 +355,23 @@ function maxWizardStart() {
   };
 }
 
+function maxRecipientKeyboard(occasion = "surprise") {
+  const payload = (recipient) => `wizard:recipient:${occasion}:${recipient}`;
+  return maxCallbackKeyboard([
+    [{ text: "Маме", payload: payload("mom") }, { text: "Любимой", payload: payload("love") }],
+    [{ text: "Подруге", payload: payload("friend") }, { text: "Коллеге или клиенту", payload: payload("colleague") }],
+    [{ text: "Себе", payload: payload("self") }]
+  ]);
+}
+
+function maxBudgetKeyboard(occasion = "surprise", recipient = "friend") {
+  const payload = (budget) => `wizard:budget:${occasion}:${recipient}:${budget}`;
+  return maxCallbackKeyboard([
+    [{ text: "До 3 000 ₽", payload: payload("low") }, { text: "3 000–6 000 ₽", payload: payload("mid") }],
+    [{ text: "От 6 000 ₽", payload: payload("high") }, { text: "Не знаю — подберите", payload: payload("mid") }]
+  ]);
+}
+
 async function sendMaxReply(update, text, recipientId, recipientType = "user", attachments = []) {
   const callbackId = update?.callback?.callback_id || update?.callback?.id || update?.callback_id;
   if (!callbackId) return sendMaxMessageTo(text, recipientId, recipientType, attachments);
@@ -377,8 +403,8 @@ async function handleMaxUpdate(update) {
   const current = dialogs[String(chatId)] || {};
   let dialog = current;
   let response;
-  const chooseRecipient = { text: "Кому выбираем подарок?", attachments: maxCallbackKeyboard([[{ text: "Маме", payload: "wizard:recipient:mom" }, { text: "Любимой", payload: "wizard:recipient:love" }], [{ text: "Подруге", payload: "wizard:recipient:friend" }, { text: "Коллеге или клиенту", payload: "wizard:recipient:colleague" }], [{ text: "Себе", payload: "wizard:recipient:self" }]]) };
-  const chooseBudget = { text: "Какой бюджет закладываем на букет?", attachments: maxCallbackKeyboard([[{ text: "До 3 000 ₽", payload: "wizard:budget:low" }, { text: "3 000–6 000 ₽", payload: "wizard:budget:mid" }], [{ text: "От 6 000 ₽", payload: "wizard:budget:high" }, { text: "Не знаю — подберите", payload: "wizard:budget:mid" }]]) };
+  const chooseRecipient = (occasion = dialog.occasion || "surprise") => ({ text: "Кому выбираем подарок?", attachments: maxRecipientKeyboard(occasion) });
+  const chooseBudget = (occasion = dialog.occasion || "surprise", recipient = dialog.recipient || "friend") => ({ text: "Какой бюджет закладываем на букет?", attachments: maxBudgetKeyboard(occasion, recipient) });
 
   if (!input || /^(\/start|начать|привет|меню|выбрать)$/.test(input)) {
     dialog = { stage: "occasion" };
@@ -389,15 +415,23 @@ async function handleMaxUpdate(update) {
     saveMaxDialog(chatId, dialog);
     response = maxWizardStart();
   } else if (input.startsWith("wizard:occasion:")) {
-    dialog = { ...dialog, stage: "recipient", occasion: input.split(":").pop() };
+    const occasion = input.split(":")[2] || "surprise";
+    dialog = { ...dialog, stage: "recipient", occasion };
     saveMaxDialog(chatId, dialog);
-    response = chooseRecipient;
+    response = chooseRecipient(occasion);
   } else if (input.startsWith("wizard:recipient:")) {
-    dialog = { ...dialog, stage: "budget", recipient: input.split(":").pop() };
+    const parts = input.split(":");
+    const occasion = parts[2] || dialog.occasion || "surprise";
+    const recipient = parts[3] || parts[2] || dialog.recipient || "friend";
+    dialog = { ...dialog, stage: "budget", occasion, recipient };
     saveMaxDialog(chatId, dialog);
-    response = chooseBudget;
+    response = chooseBudget(occasion, recipient);
   } else if (input.startsWith("wizard:budget:")) {
-    dialog = { ...dialog, stage: "recommendations", budget: input.split(":").pop() };
+    const parts = input.split(":");
+    const occasion = parts[2] || dialog.occasion || "surprise";
+    const recipient = parts[3] || dialog.recipient || "friend";
+    const budget = parts[4] || parts[2] || dialog.budget || "mid";
+    dialog = { ...dialog, stage: "recommendations", occasion, recipient, budget };
     const recommendations = recommendMaxProducts(dialog);
     clearMaxDialog(chatId);
     response = {
@@ -409,21 +443,21 @@ async function handleMaxUpdate(update) {
     const product = catalog[productId];
     response = product ? { text: `Открываю «${product.title}». В мини‑приложении можно посмотреть фото, выбрать доставку и оплатить заказ онлайн.`, attachments: maxAppAttachment(productId) } : { text: "Откройте каталог — я помогу выбрать другой букет.", attachments: maxAppAttachment() };
   } else if (dialog.stage === "occasion" && /(рожд|юбиле|празд|день)/.test(text)) {
-    dialog = { ...dialog, stage: "recipient", occasion: "birthday" }; saveMaxDialog(chatId, dialog); response = chooseRecipient;
+    dialog = { ...dialog, stage: "recipient", occasion: "birthday" }; saveMaxDialog(chatId, dialog); response = chooseRecipient("birthday");
   } else if (dialog.stage === "occasion" && /(люб|свидан|романт)/.test(text)) {
-    dialog = { ...dialog, stage: "recipient", occasion: "love" }; saveMaxDialog(chatId, dialog); response = chooseRecipient;
+    dialog = { ...dialog, stage: "recipient", occasion: "love" }; saveMaxDialog(chatId, dialog); response = chooseRecipient("love");
   } else if (dialog.stage === "occasion" && /(спасибо|благодар|поддерж)/.test(text)) {
-    dialog = { ...dialog, stage: "recipient", occasion: "gratitude" }; saveMaxDialog(chatId, dialog); response = chooseRecipient;
+    dialog = { ...dialog, stage: "recipient", occasion: "gratitude" }; saveMaxDialog(chatId, dialog); response = chooseRecipient("gratitude");
   } else if (dialog.stage === "occasion" && /(корп|коллег|клиент|сотруд)/.test(text)) {
-    dialog = { ...dialog, stage: "recipient", occasion: "corporate" }; saveMaxDialog(chatId, dialog); response = chooseRecipient;
+    dialog = { ...dialog, stage: "recipient", occasion: "corporate" }; saveMaxDialog(chatId, dialog); response = chooseRecipient("corporate");
   } else if (dialog.stage === "recipient" && /(мам|мама)/.test(text)) {
-    dialog = { ...dialog, stage: "budget", recipient: "mom" }; saveMaxDialog(chatId, dialog); response = chooseBudget;
+    dialog = { ...dialog, stage: "budget", recipient: "mom" }; saveMaxDialog(chatId, dialog); response = chooseBudget(dialog.occasion, "mom");
   } else if (dialog.stage === "recipient" && /(любим|жене|девуш|муж|парн)/.test(text)) {
-    dialog = { ...dialog, stage: "budget", recipient: "love" }; saveMaxDialog(chatId, dialog); response = chooseBudget;
+    dialog = { ...dialog, stage: "budget", recipient: "love" }; saveMaxDialog(chatId, dialog); response = chooseBudget(dialog.occasion, "love");
   } else if (dialog.stage === "recipient" && /(подруг|друг|себе)/.test(text)) {
-    dialog = { ...dialog, stage: "budget", recipient: text.includes("себе") ? "self" : "friend" }; saveMaxDialog(chatId, dialog); response = chooseBudget;
+    dialog = { ...dialog, stage: "budget", recipient: text.includes("себе") ? "self" : "friend" }; saveMaxDialog(chatId, dialog); response = chooseBudget(dialog.occasion, dialog.recipient);
   } else if (dialog.stage === "recipient" && /(коллег|клиент|сотруд)/.test(text)) {
-    dialog = { ...dialog, stage: "budget", recipient: "colleague" }; saveMaxDialog(chatId, dialog); response = chooseBudget;
+    dialog = { ...dialog, stage: "budget", recipient: "colleague" }; saveMaxDialog(chatId, dialog); response = chooseBudget(dialog.occasion, "colleague");
   } else if (dialog.stage === "budget") {
     const amount = Number(text.replace(/\D/g, ""));
     const budget = text.includes("не знаю") ? "mid" : amount ? amount : text.includes("6") ? "high" : text.includes("3") ? "mid" : null;
