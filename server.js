@@ -303,6 +303,7 @@ function maxAppUrl(productId = "") {
   if (!configured || !/^https:\/\//i.test(configured)) return "";
   try {
     const url = new URL(configured);
+    url.searchParams.set("miniapp", "preview");
     if (productId) url.searchParams.set("product", productId);
     url.hash = "catalog";
     return url.toString();

@@ -717,8 +717,8 @@ function initMaxMiniApp() {
   const params = new URLSearchParams(window.location.search);
   const isPreview = params.get("miniapp") === "preview";
   const isSitePreview = params.get("site") === "1";
-  if (isSitePreview) return;
-  if (!maxApp && !isPreview) return;
+  const isMaxRuntime = Boolean(maxApp?.initData);
+  if (isSitePreview || (!isPreview && !isMaxRuntime)) return;
   configureMiniAppShell();
   maxApp?.ready?.();
   maxApp?.expand?.();
