@@ -152,7 +152,7 @@ function paymentMetadataText(value, maxLength = 512) {
 }
 
 function buildPaymentMetadata(payload, orderId) {
-  return {
+  const metadata = {
     order_id: paymentMetadataText(orderId, 128),
     max_chat_id: paymentMetadataText(payload.max_chat_id, 128),
     max_user_id: paymentMetadataText(payload.max_user_id, 128),
@@ -171,6 +171,7 @@ function buildPaymentMetadata(payload, orderId) {
     order_photo_name: paymentMetadataText(payload.order_photo_name, 160),
     items: JSON.stringify((payload.items || []).map((item) => ({ id: item.id, quantity: item.quantity })))
   };
+  return Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== ""));
 }
 
 function orderFromPaymentMetadata(paymentObject) {
@@ -251,8 +252,22 @@ async function createPayment(payload) {
     headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json", "Idempotence-Key": crypto.randomUUID() },
     body: JSON.stringify(requestBody)
   });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.description || "YooKassa error");
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const details = [
+      result.description,
+      result.code ? `код ${result.code}` : "",
+      result.parameter ? `параметр ${result.parameter}` : ""
+    ].filter(Boolean).join("; ");
+    console.error("YooKassa create payment failed", {
+      status: response.status,
+      type: result.type,
+      code: result.code,
+      parameter: result.parameter,
+      description: result.description
+    });
+    throw new Error(details || "YooKassa error");
+  }
   return { demo: false, order_id: orderId, payment_id: result.id, confirmation_url: result.confirmation?.confirmation_url, status: result.status, receipt_mode: taxMode === "company" ? "yookassa" : "my_tax_manual" };
 }
 
