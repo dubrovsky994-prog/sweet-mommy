@@ -100,7 +100,8 @@ const followupsFile = path.join(root, "followups.json");
 function readFollowups() {
   try { const data = JSON.parse(fs.readFileSync(followupsFile, "utf8")); return Array.isArray(data) ? data : []; } catch { return []; }
 }
-function writeFollowups(data) { fs.writeFileSync(followupsFile, `${JSON.stringify(data, null, 2)}\n`, "utf8"); }
+function writeFollowups(data) { try { fs.writeFileSync(followupsFile, `${JSON.stringify(data, null, 2)}\n`, "utf8"); } catch {} }
+const notifiedPaymentIds = new Set();
 function scheduleReviewFollowup(order) {
   if (!order.chat_id) return;
   const followups = readFollowups();
@@ -146,6 +147,68 @@ function reviewPhotoData(photo) {
 
 function requestedReviewPath(url) { return (url || "").split("?")[0] === "/api/reviews"; }
 
+function paymentMetadataText(value, maxLength = 512) {
+  return String(value ?? "").trim().slice(0, maxLength);
+}
+
+function buildPaymentMetadata(payload, orderId) {
+  return {
+    order_id: paymentMetadataText(orderId, 128),
+    max_chat_id: paymentMetadataText(payload.max_chat_id, 128),
+    max_user_id: paymentMetadataText(payload.max_user_id, 128),
+    customer_name: paymentMetadataText(payload.customer_name, 120),
+    customer_phone: paymentMetadataText(payload.customer_phone, 64),
+    customer_email: paymentMetadataText(payload.customer_email, 160),
+    recipient_name: paymentMetadataText(payload.recipient_name, 120),
+    recipient_phone: paymentMetadataText(payload.recipient_phone, 64),
+    address: paymentMetadataText(payload.address, 512),
+    delivery_date: paymentMetadataText(payload.delivery_date, 32),
+    delivery_slot: paymentMetadataText(payload.delivery_slot, 64),
+    delivery_zone: paymentMetadataText(payload.delivery_zone, 64),
+    delivery_price: paymentMetadataText(payload.delivery_price, 32),
+    total: paymentMetadataText(payload.total, 32),
+    comment: paymentMetadataText(payload.comment, 512),
+    order_photo_name: paymentMetadataText(payload.order_photo_name, 160),
+    items: JSON.stringify((payload.items || []).map((item) => ({ id: item.id, quantity: item.quantity })))
+  };
+}
+
+function orderFromPaymentMetadata(paymentObject) {
+  const metadata = paymentObject?.metadata || {};
+  if (!metadata.order_id || !metadata.items) return null;
+  let rawItems;
+  try { rawItems = JSON.parse(metadata.items); } catch { return null; }
+  if (!Array.isArray(rawItems)) return null;
+  const items = rawItems.map((item) => {
+    const product = catalog[item?.id];
+    const quantity = Number(item?.quantity);
+    if (!product || !Number.isInteger(quantity) || quantity < 1 || quantity > 99) return null;
+    return { id: item.id, title: product.title, price: product.price, quantity };
+  }).filter(Boolean);
+  if (!items.length || items.length !== rawItems.length) return null;
+  const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const deliveryPrice = Number(metadata.delivery_price) || 0;
+  return {
+    max_chat_id: metadata.max_chat_id || "",
+    max_user_id: metadata.max_user_id || "",
+    customer_name: metadata.customer_name || "",
+    customer_phone: metadata.customer_phone || "",
+    customer_email: metadata.customer_email || "",
+    recipient_name: metadata.recipient_name || "",
+    recipient_phone: metadata.recipient_phone || "",
+    address: metadata.address || "",
+    delivery_date: metadata.delivery_date || "",
+    delivery_slot: metadata.delivery_slot || "",
+    delivery_zone: metadata.delivery_zone || "",
+    delivery_price: deliveryPrice,
+    total: Number(metadata.total) || subtotal + deliveryPrice,
+    comment: metadata.comment || "",
+    order_photo_name: metadata.order_photo_name || "",
+    items,
+    subtotal
+  };
+}
+
 async function createPayment(payload) {
   const orderId = `SM-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
   const hasYooKassa = process.env.YOO_KASSA_SHOP_ID && process.env.YOO_KASSA_SECRET_KEY && process.env.YOO_KASSA_RETURN_URL;
@@ -179,7 +242,7 @@ async function createPayment(payload) {
     capture: true,
     confirmation: { type: "redirect", return_url: process.env.YOO_KASSA_RETURN_URL },
     description: `Sweet Mommy заказ ${orderId}`,
-    metadata: { order_id: orderId, max_chat_id: payload.max_chat_id || "" }
+    metadata: buildPaymentMetadata(payload, orderId)
   };
   if (taxMode === "company") requestBody.receipt = { customer: { email: payload.customer_email, phone: payload.customer_phone }, items };
   const auth = Buffer.from(`${process.env.YOO_KASSA_SHOP_ID}:${process.env.YOO_KASSA_SECRET_KEY}`).toString("base64");
@@ -537,8 +600,26 @@ const requestHandler = async (req, res) => {
     if (req.method === "POST" && req.url === "/api/yookassa/webhook") {
       const payload = await readBody(req);
       const paymentObject = payload.object || {};
-      if (payload.event === "payment.succeeded" && paymentObject.metadata?.max_chat_id) {
-        scheduleReviewFollowup({ order_id: paymentObject.metadata.order_id || paymentObject.id, chat_id: paymentObject.metadata.max_chat_id });
+      if (payload.event === "payment.succeeded") {
+        const paidOrder = orderFromPaymentMetadata(paymentObject);
+        if (paidOrder) {
+          const payment = {
+            order_id: paymentObject.metadata.order_id || paymentObject.id,
+            payment_id: paymentObject.id || "",
+            status: paymentObject.status || "succeeded"
+          };
+          const notificationKey = payment.payment_id || payment.order_id;
+          let notificationSent = false;
+          if (!notifiedPaymentIds.has(notificationKey)) {
+            await sendMaxOrder(paidOrder, payment);
+            notifiedPaymentIds.add(notificationKey);
+            notificationSent = true;
+            if (notifiedPaymentIds.size > 500) notifiedPaymentIds.delete(notifiedPaymentIds.values().next().value);
+          }
+          if (notificationSent && paymentObject.metadata.max_chat_id) {
+            scheduleReviewFollowup({ order_id: payment.order_id, chat_id: paymentObject.metadata.max_chat_id });
+          }
+        }
       }
       return json(res, 200, { ok: true });
     }
@@ -558,13 +639,7 @@ const requestHandler = async (req, res) => {
       if (maxIdentity?.chatId) orderPayload.max_chat_id = maxIdentity.chatId;
       if (maxIdentity?.userId) orderPayload.max_user_id = maxIdentity.userId;
       const payment = await createPayment(orderPayload);
-      let maxNotification;
-      try {
-        maxNotification = await sendMaxOrder(orderPayload, payment);
-      } catch (error) {
-        maxNotification = { demo: false, status: "error", error: error.message };
-      }
-      return json(res, 200, { ...payment, max_notification: maxNotification });
+      return json(res, 200, payment);
     }
     if (req.method === "POST" && req.url === "/api/contact-request") {
       const payload = await readBody(req);
