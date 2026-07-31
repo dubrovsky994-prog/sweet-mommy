@@ -269,8 +269,31 @@ async function submitOrder(event) {
   const form = event.currentTarget;
   const submitButton = form.querySelector('button[type="submit"]');
   const message = $("[data-form-message]");
+  const requiredLabels = {
+    customer_name: "имя заказчика",
+    customer_phone: "телефон заказчика",
+    customer_email: "email для чека",
+    recipient_name: "имя получателя",
+    recipient_phone: "телефон получателя",
+    address: "адрес доставки",
+    delivery_date: "дату доставки",
+    delivery_slot: "интервал доставки",
+    offer_consent: "принятие оферты",
+    privacy_consent: "согласие на обработку данных"
+  };
+  const invalidField = [...form.querySelectorAll("[required]")].find((field) => {
+    if (field.type === "checkbox") return !field.checked;
+    return !String(field.value || "").trim();
+  });
+  if (invalidField) {
+    const fieldName = requiredLabels[invalidField.name] || "обязательное поле";
+    message.className = "form-message error";
+    message.textContent = `Заполните: ${fieldName}.`;
+    invalidField.focus();
+    return;
+  }
   message.className = "form-message";
-  message.textContent = "Создаём заказ…";
+  message.textContent = "Проверяем данные и готовим защищённую оплату…";
   if (submitButton) submitButton.disabled = true;
   const formData = new FormData(form);
   const payload = Object.fromEntries(formData.entries());
