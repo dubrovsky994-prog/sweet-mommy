@@ -101,7 +101,12 @@ function readFollowups() {
   try { const data = JSON.parse(fs.readFileSync(followupsFile, "utf8")); return Array.isArray(data) ? data : []; } catch { return []; }
 }
 function writeFollowups(data) { try { fs.writeFileSync(followupsFile, `${JSON.stringify(data, null, 2)}\n`, "utf8"); } catch {} }
-const notifiedPaymentIds = new Set();
+const notifiedMaxPaymentIds = new Set();
+const notifiedSmsPaymentIds = new Set();
+function rememberNotification(set, key) {
+  set.add(key);
+  if (set.size > 500) set.delete(set.values().next().value);
+}
 function scheduleReviewFollowup(order) {
   if (!order.chat_id) return;
   const followups = readFollowups();
@@ -292,6 +297,37 @@ async function sendMaxMessage(text) {
   const recipientId = maxSetting("MAX_RECIPIENT_ID", "recipient_id");
   const recipientType = maxSetting("MAX_RECIPIENT_TYPE", "recipient_type") === "chat" ? "chat" : "user";
   return sendMaxMessageTo(text, recipientId, recipientType);
+}
+
+function normalizeSmsPhone(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length === 10) return `7${digits}`;
+  if (digits.length === 11 && digits.startsWith("8")) return `7${digits.slice(1)}`;
+  if (digits.length === 11 && digits.startsWith("7")) return digits;
+  return "";
+}
+
+async function sendPaidOrderSms(order, payment) {
+  const apiId = process.env.SMSRU_API_ID;
+  const recipient = normalizeSmsPhone(process.env.SMS_NOTIFY_TO);
+  if (!apiId || !recipient) return { demo: true, status: "sms_not_configured" };
+
+  const message = [
+    "Sweet Mommy: оплачен заказ",
+    payment.order_id,
+    `${Number(order.total || 0).toLocaleString("ru-RU")} ₽`,
+    `${order.delivery_date || "дата уточняется"} ${order.delivery_slot || ""}`,
+    order.customer_name ? `Клиент: ${order.customer_name}` : ""
+  ].filter(Boolean).join(". ");
+  const query = new URLSearchParams({ api_id: apiId, to: recipient, msg: message, json: "1" });
+  if (process.env.SMSRU_FROM) query.set("from", process.env.SMSRU_FROM);
+  const response = await fetch(`https://sms.ru/sms/send?${query.toString()}`);
+  const result = await response.json().catch(() => ({}));
+  const smsResult = result.sms?.[recipient];
+  if (!response.ok || result.status !== "OK" || (smsResult && smsResult.status !== "OK")) {
+    throw new Error(smsResult?.status_text || result.status_text || `SMS.ru error ${result.status_code || response.status}`);
+  }
+  return { demo: false, status: "sent", sms_id: smsResult?.sms_id || "" };
 }
 
 async function processFollowups() {
@@ -625,12 +661,27 @@ const requestHandler = async (req, res) => {
           };
           const notificationKey = payment.payment_id || payment.order_id;
           let notificationSent = false;
-          if (!notifiedPaymentIds.has(notificationKey)) {
-            await sendMaxOrder(paidOrder, payment);
-            notifiedPaymentIds.add(notificationKey);
-            notificationSent = true;
-            if (notifiedPaymentIds.size > 500) notifiedPaymentIds.delete(notifiedPaymentIds.values().next().value);
+          const notificationErrors = [];
+          if (!notifiedMaxPaymentIds.has(notificationKey)) {
+            try {
+              const maxNotification = await sendMaxOrder(paidOrder, payment);
+              if (maxNotification.status === "sent") {
+                rememberNotification(notifiedMaxPaymentIds, notificationKey);
+                notificationSent = true;
+              }
+            } catch (error) {
+              notificationErrors.push(`MAX: ${error.message}`);
+            }
           }
+          if (!notifiedSmsPaymentIds.has(notificationKey)) {
+            try {
+              const smsNotification = await sendPaidOrderSms(paidOrder, payment);
+              if (smsNotification.status === "sent") rememberNotification(notifiedSmsPaymentIds, notificationKey);
+            } catch (error) {
+              notificationErrors.push(`SMS: ${error.message}`);
+            }
+          }
+          if (notificationErrors.length) console.error("Paid order notification errors", { order_id: payment.order_id, errors: notificationErrors });
           if (notificationSent && paymentObject.metadata.max_chat_id) {
             scheduleReviewFollowup({ order_id: payment.order_id, chat_id: paymentObject.metadata.max_chat_id });
           }
