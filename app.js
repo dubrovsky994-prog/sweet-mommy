@@ -805,18 +805,18 @@ function initPwa() {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => undefined), { once: true });
   }
-  const installButton = $("[data-pwa-install]");
-  if (!installButton) return;
+  const installButtons = $$('[data-pwa-install]');
+  if (!installButtons.length) return;
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     deferredPwaPrompt = event;
   });
   window.addEventListener("appinstalled", () => {
     deferredPwaPrompt = null;
-    installButton.hidden = true;
+    installButtons.forEach((button) => { button.hidden = true; });
     showPwaHint("Sweet Mommy добавлен на главный экран.");
   });
-  installButton.addEventListener("click", async () => {
+  installButtons.forEach((installButton) => installButton.addEventListener("click", async () => {
     if (!deferredPwaPrompt) {
       showPwaHint("Android: выберите «Установить приложение» в меню браузера. iPhone: «Поделиться» → «На экран Домой».");
       return;
@@ -825,7 +825,7 @@ function initPwa() {
     const choice = await deferredPwaPrompt.userChoice;
     if (choice?.outcome === "accepted") showPwaHint("Готово — приложение можно открыть с главного экрана.");
     deferredPwaPrompt = null;
-  });
+  }));
 }
 
 function init() {
