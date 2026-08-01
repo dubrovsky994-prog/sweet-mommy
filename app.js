@@ -172,28 +172,28 @@ function formatDeliveryDateTime(date) {
 }
 function syncDeliveryCalendar() {
   const dateInput = $("input[name=delivery_date]");
-  const slotInput = $("select[name=delivery_slot]");
+  const slotInput = $("input[name=delivery_slot]");
   if (!dateInput || !slotInput) return true;
   const earliest = new Date(Date.now() + PREPARATION_MS);
-  const minimumDate = localDateValue(earliest);
+  const earliestSelectable = new Date(earliest);
+  earliestSelectable.setMinutes(Math.ceil(earliestSelectable.getMinutes() / 30) * 30, 0, 0);
+  if (earliestSelectable.getHours() > 20 || (earliestSelectable.getHours() === 20 && earliestSelectable.getMinutes() > 0)) {
+    earliestSelectable.setDate(earliestSelectable.getDate() + 1);
+    earliestSelectable.setHours(9, 0, 0, 0);
+  }
+  const minimumDate = localDateValue(earliestSelectable);
   dateInput.min = minimumDate;
   if (!dateInput.value || dateInput.value < minimumDate) dateInput.value = minimumDate;
   let selected = deliveryDateTime(dateInput.value, slotInput.value);
   if (selected && selected < earliest && dateInput.value === minimumDate) {
-    const nextSlot = [...slotInput.options].find((option) => {
-      const optionDateTime = deliveryDateTime(dateInput.value, option.value);
-      return optionDateTime && optionDateTime >= earliest;
-    });
-    if (nextSlot) {
-      slotInput.value = nextSlot.value;
-      selected = deliveryDateTime(dateInput.value, slotInput.value);
-    }
+    slotInput.value = [earliestSelectable.getHours(), earliestSelectable.getMinutes()].map((value) => String(value).padStart(2, "0")).join(":");
+    selected = deliveryDateTime(dateInput.value, slotInput.value);
   }
   const valid = Boolean(selected && selected >= earliest);
   const note = $("[data-delivery-availability]");
-  if (note) note.textContent = valid ? `Подготовка занимает 12 часов · ближайшее окно — ${formatDeliveryDateTime(earliest)}.` : "Выберите дату и интервал не раньше чем через 12 часов после заказа.";
-  dateInput.setCustomValidity(valid ? "" : "Дата и интервал должны учитывать 12 часов на приготовление.");
-  slotInput.setCustomValidity(valid ? "" : "Выберите доступный интервал доставки.");
+  if (note) note.textContent = valid ? "Подготовка занимает 12 часов · ближайшее доступное время — " + formatDeliveryDateTime(earliestSelectable) + "." : "Выберите дату и время не раньше чем через 12 часов после заказа.";
+  dateInput.setCustomValidity(valid ? "" : "Дата и время должны учитывать 12 часов на приготовление.");
+  slotInput.setCustomValidity(valid ? "" : "Выберите время доставки с 09:00 до 20:00 не раньше чем через 12 часов.");
   return valid;
 }
 
@@ -309,7 +309,7 @@ async function submitOrder(event) {
     recipient_phone: "телефон получателя",
     address: "адрес доставки",
     delivery_date: "дату доставки",
-    delivery_slot: "интервал доставки",
+    delivery_slot: "время доставки",
     offer_consent: "принятие оферты",
     privacy_consent: "согласие на обработку данных"
   };
@@ -837,7 +837,7 @@ function init() {
   $$("[data-filter]").forEach((button) => button.addEventListener("click", () => { state.filter = button.dataset.filter; $$("[data-filter]").forEach((item) => item.classList.toggle("is-active", item === button)); renderProducts(); }));
   $$("[data-open-cart]").forEach((button) => button.addEventListener("click", openCart)); $$("[data-close-cart]").forEach((button) => button.addEventListener("click", closeCart)); $("[data-checkout]").addEventListener("click", openCheckout); $("[data-mini-checkout]")?.addEventListener("click", openCheckout); $("[data-close-checkout]").addEventListener("click", closeCheckout); $("[data-checkout-form]").addEventListener("submit", submitOrder); $("[data-checkout-form]").addEventListener("input", (event) => { event.target.removeAttribute("aria-invalid"); }); $("[data-checkout-form]").addEventListener("change", (event) => { event.target.removeAttribute("aria-invalid"); }); $("[data-delivery-zone]").addEventListener("change", renderCheckoutSummary);
   const dateInput = $("input[name=delivery_date]");
-  const slotInput = $("select[name=delivery_slot]");
+  const slotInput = $("input[name=delivery_slot]");
   if (dateInput && slotInput) {
     const availabilityNote = document.createElement("small");
     availabilityNote.className = "delivery-availability-note";
@@ -845,6 +845,7 @@ function init() {
     slotInput.parentElement?.after(availabilityNote);
     dateInput.addEventListener("change", syncDeliveryCalendar);
     slotInput.addEventListener("change", syncDeliveryCalendar);
+    slotInput.addEventListener("input", syncDeliveryCalendar);
     syncDeliveryCalendar();
   }
   if (localStorage.getItem("sweet-mommy-cookie-ok") === "1") {

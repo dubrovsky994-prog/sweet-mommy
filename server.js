@@ -35,12 +35,23 @@ const catalog = {
 const deliveryPrices = { penza_5: 250, penza_10: 350, penza_15: 500, serdobsk_5: 250, serdobsk_10: 350, serdobsk_15: 500 };
 const deliveryLabels = { penza_5: "Пенза и район · до 5 км", penza_10: "Пенза и район · 5–10 км", penza_15: "Пенза и район · 10–15 км", serdobsk_5: "Сердобск · до 5 км", serdobsk_10: "Сердобск · 5–10 км", serdobsk_15: "Сердобск · 10–15 км" };
 const PREPARATION_HOURS = 12;
+const DELIVERY_OPEN_HOUR = 9;
+const DELIVERY_CLOSE_HOUR = 20;
+const DELIVERY_STEP_MINUTES = 30;
 
 function deliveryDateTime(dateValue, slotValue) {
   if (!dateValue || !slotValue) return null;
   const [year, month, day] = String(dateValue).split("-").map(Number);
   const [hours, minutes] = String(slotValue).split(/[–-]/)[0].trim().split(":").map(Number);
   if (![year, month, day, hours, minutes].every(Number.isFinite)) return null;
+  if (
+    hours < DELIVERY_OPEN_HOUR ||
+    hours > DELIVERY_CLOSE_HOUR ||
+    minutes < 0 ||
+    minutes >= 60 ||
+    minutes % DELIVERY_STEP_MINUTES !== 0 ||
+    (hours === DELIVERY_CLOSE_HOUR && minutes !== 0)
+  ) return null;
   return new Date(year, month - 1, day, hours, minutes, 0, 0);
 }
 

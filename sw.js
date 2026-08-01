@@ -1,4 +1,4 @@
-const CACHE_NAME = "sweet-mommy-shell-v6";
+const CACHE_NAME = "sweet-mommy-shell-v7";
 const APP_SHELL = [
   "./",
   "./index.html",
