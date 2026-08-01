@@ -284,7 +284,7 @@ function showPaymentFallback(url) {
 function openPaymentUrl(url) {
   showPaymentFallback(url);
   const maxApp = window.WebApp;
-  const isMaxRuntime = Boolean(maxApp?.initData);
+  const isMaxRuntime = document.documentElement.classList.contains("is-max-miniapp") && Boolean(String(maxApp?.initData || "").trim());
   if (isMaxRuntime && typeof maxApp?.openLink === "function") {
     try {
       maxApp.openLink(url);
@@ -293,7 +293,7 @@ function openPaymentUrl(url) {
       // Если MAX не смог открыть внешний адрес, оставляем резервную ссылку.
     }
   }
-  window.location.href = url;
+  window.location.assign(url);
 }
 
 async function submitOrder(event) {
