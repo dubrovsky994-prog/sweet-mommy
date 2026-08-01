@@ -284,7 +284,8 @@ function showPaymentFallback(url) {
 function openPaymentUrl(url) {
   showPaymentFallback(url);
   const maxApp = window.WebApp;
-  if (typeof maxApp?.openLink === "function") {
+  const isMaxRuntime = Boolean(maxApp?.initData);
+  if (isMaxRuntime && typeof maxApp?.openLink === "function") {
     try {
       maxApp.openLink(url);
       return;
@@ -292,7 +293,7 @@ function openPaymentUrl(url) {
       // Если MAX не смог открыть внешний адрес, оставляем резервную ссылку.
     }
   }
-  window.location.assign(url);
+  window.location.href = url;
 }
 
 async function submitOrder(event) {
@@ -320,9 +321,13 @@ async function submitOrder(event) {
     const fieldName = requiredLabels[invalidField.name] || "обязательное поле";
     message.className = "form-message error";
     message.textContent = `Заполните: ${fieldName}.`;
-    invalidField.focus();
+    invalidField.setAttribute("aria-invalid", "true");
+    const fieldGroup = invalidField.closest("fieldset") || invalidField.closest("label") || invalidField;
+    fieldGroup.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    window.setTimeout(() => invalidField.focus({ preventScroll: true }), 260);
     return;
   }
+  form.querySelectorAll("[aria-invalid='true']").forEach((field) => field.removeAttribute("aria-invalid"));
   message.className = "form-message";
   message.textContent = "Проверяем данные и готовим защищённую оплату…";
   if (submitButton) submitButton.disabled = true;
@@ -830,7 +835,7 @@ function init() {
   initPhotoPreviews();
   $("[data-lead-form]")?.addEventListener("submit", submitLead);
   $$("[data-filter]").forEach((button) => button.addEventListener("click", () => { state.filter = button.dataset.filter; $$("[data-filter]").forEach((item) => item.classList.toggle("is-active", item === button)); renderProducts(); }));
-  $$("[data-open-cart]").forEach((button) => button.addEventListener("click", openCart)); $$("[data-close-cart]").forEach((button) => button.addEventListener("click", closeCart)); $("[data-checkout]").addEventListener("click", openCheckout); $("[data-mini-checkout]")?.addEventListener("click", openCheckout); $("[data-close-checkout]").addEventListener("click", closeCheckout); $("[data-checkout-form]").addEventListener("submit", submitOrder); $("[data-delivery-zone]").addEventListener("change", renderCheckoutSummary);
+  $$("[data-open-cart]").forEach((button) => button.addEventListener("click", openCart)); $$("[data-close-cart]").forEach((button) => button.addEventListener("click", closeCart)); $("[data-checkout]").addEventListener("click", openCheckout); $("[data-mini-checkout]")?.addEventListener("click", openCheckout); $("[data-close-checkout]").addEventListener("click", closeCheckout); $("[data-checkout-form]").addEventListener("submit", submitOrder); $("[data-checkout-form]").addEventListener("input", (event) => { event.target.removeAttribute("aria-invalid"); }); $("[data-checkout-form]").addEventListener("change", (event) => { event.target.removeAttribute("aria-invalid"); }); $("[data-delivery-zone]").addEventListener("change", renderCheckoutSummary);
   const dateInput = $("input[name=delivery_date]");
   const slotInput = $("select[name=delivery_slot]");
   if (dateInput && slotInput) {
