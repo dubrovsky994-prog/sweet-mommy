@@ -355,7 +355,7 @@ async function submitOrder(event) {
       openPaymentUrl(result.confirmation_url);
       return;
     }
-    showSuccess(result.demo ? "Демо-заказ создан. Деньги не списывались — после подключения ЮKassa появится переход на защищённую оплату." : "Заказ создан. Мы свяжемся с вами для подтверждения.", result.order_id);
+    showSuccess(result.demo ? "Заказ принят. Мы свяжемся с вами, чтобы уточнить детали оплаты." : "Заказ создан. Мы свяжемся с вами для подтверждения.", result.order_id);
   } catch (error) {
     message.className = "form-message error";
     message.textContent = error.message || "Не удалось создать заказ. Проверьте соединение или напишите нам в MAX/Telegram.";
@@ -394,7 +394,7 @@ async function submitLead(event) {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Не удалось отправить заявку");
     message.className = "form-message success";
-    message.textContent = result.demo ? "Заявка принята в демо-режиме. После подключения MAX-бота она будет приходить в рабочий чат." : "Заявка отправлена в MAX. Мы скоро ответим.";
+    message.textContent = result.demo ? "Заявка принята. Мы скоро ответим." : "Заявка отправлена в MAX. Мы скоро ответим.";
     form.reset();
   } catch (error) {
     message.className = "form-message error";

@@ -4,7 +4,7 @@
   "description": "Каталог съедобных букетов и оформление заказа с доставкой.",
   "lang": "ru-RU",
   "dir": "ltr",
-  "start_url": "./?miniapp=preview#top",
+  "start_url": "./?site=1#top",
   "scope": "./",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone"],
