@@ -1,11 +1,12 @@
-const CACHE_NAME = "sweet-mommy-shell-v11";
+const CACHE_NAME = "sweet-mommy-shell-v12";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
   "./manifest.json",
-  "./assets/pwa-icon.svg"
+  "./assets/pwa-icon-192.png",
+  "./assets/pwa-icon-512.png"
 ];
 
 self.addEventListener("install", (event) => {
