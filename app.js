@@ -338,7 +338,16 @@ async function submitOrder(event) {
     payload.max_init_data = maxApp.initData;
     payload.max_app = "MAX Mini App";
   }
-  payload.items = state.cart.map((item) => ({ ...item, title: getProduct(item.id).title, price: getProduct(item.id).price }));
+  payload.items = state.cart.map((item) => {
+    const product = getProduct(item.id);
+    if (!product) return null;
+    return {
+      id: item.id,
+      quantity: Math.min(99, Math.max(1, Math.floor(Number(item.quantity) || 1))),
+      title: product.title,
+      price: product.price
+    };
+  }).filter(Boolean);
   payload.subtotal = subtotal();
   payload.delivery_price = deliveryPrice(payload.delivery_zone);
   payload.total = subtotal() + payload.delivery_price;

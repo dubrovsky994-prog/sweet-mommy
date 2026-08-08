@@ -73,6 +73,16 @@ function normalizeOrder(payload) {
   return { ...payload, items, subtotal, delivery_price: deliveryPrice, total: subtotal + deliveryPrice };
 }
 
+// YooKassa expects receipt item quantity as a JSON number (for example 1.000),
+// not a string such as "1". Keep the value numeric before it is serialized.
+function receiptQuantity(value) {
+  const quantity = Number(value);
+  if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 99) {
+    throw new Error("Не удалось сверить количество товаров для чека. Обновите корзину и попробуйте ещё раз.");
+  }
+  return Number(quantity.toFixed(3));
+}
+
 function readMaxConfig() {
   try {
     const rawMaxConfig = fs.readFileSync(path.join(root, "max.config.json"), "utf8");
@@ -241,7 +251,7 @@ async function createPayment(payload) {
 
   const items = (payload.items || []).map((item) => ({
     description: item.title,
-    quantity: String(item.quantity),
+    quantity: receiptQuantity(item.quantity),
     amount: { value: Number(item.price).toFixed(2), currency: "RUB" },
     vat_code: Number(process.env.YOO_KASSA_VAT_CODE || 1),
     payment_subject: "commodity",
@@ -249,7 +259,7 @@ async function createPayment(payload) {
   }));
   if (Number(payload.delivery_price) > 0) items.push({
     description: "Доставка",
-    quantity: "1",
+    quantity: 1,
     amount: { value: Number(payload.delivery_price).toFixed(2), currency: "RUB" },
     vat_code: Number(process.env.YOO_KASSA_VAT_CODE || 1),
     payment_subject: "service",
@@ -263,7 +273,20 @@ async function createPayment(payload) {
     description: `Sweet Mommy заказ ${orderId}`,
     metadata: buildPaymentMetadata(payload, orderId)
   };
-  if (taxMode === "company") requestBody.receipt = { customer: { email: payload.customer_email, phone: payload.customer_phone }, items };
+  if (taxMode === "company") {
+    const receiptTotal = items.reduce((sum, item) => sum + Number(item.amount.value) * Number(item.quantity), 0);
+    if (Math.abs(receiptTotal - Number(payload.total)) > 0.005) {
+      throw new Error("Не удалось сверить сумму чека. Обновите корзину и попробуйте ещё раз.");
+    }
+    requestBody.receipt = { customer: { email: payload.customer_email, phone: payload.customer_phone }, items };
+  }
+  console.info("Creating YooKassa payment", {
+    order_id: orderId,
+    tax_mode: taxMode,
+    item_count: items.length,
+    quantities: items.map((item) => item.quantity),
+    total: requestBody.amount.value
+  });
   const auth = Buffer.from(`${process.env.YOO_KASSA_SHOP_ID}:${process.env.YOO_KASSA_SECRET_KEY}`).toString("base64");
   const response = await fetch("https://api.yookassa.ru/v3/payments", {
     method: "POST",
