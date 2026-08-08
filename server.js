@@ -30,7 +30,23 @@ const catalog = {
       "boundless-gratitude": { title: "Безмерная благодарность", price: 6800 },
       "spring-kaleidoscope": { title: "Весенний калейдоскоп", price: 2970 },
       "tulips-march": { title: "Тюльпаны на 8 марта", price: 3500 },
-      "winter-flower-whisper": { title: "Шелест зимних цветов", price: 4770 }
+      "winter-flower-whisper": { title: "Шелест зимних цветов", price: 4770 },
+      "babylonian-gardens": { title: "Вавилонские сады", price: 8900 },
+      "wine-peonies": { title: "Винные пионы", price: 5800 },
+      "royal-rose": { title: "Королевская роза", price: 3680 },
+      cupid: { title: "Купидон", price: 1800 },
+      "tender-glance": { title: "Ласковый взгляд", price: 3680 },
+      "interflower-consolidation": { title: "Межцветковая консолидация", price: 1800 },
+      "full-moon": { title: "Полнолуние", price: 2400 },
+      "roses-white-kimono": { title: "Розы в белых кимоно", price: 2400 },
+      "nymph-garden": { title: "Сад нимф", price: 3380 },
+      "tulips-round-box": { title: "Тюльпаны в круглой коробке", price: 1800 },
+      "violets-box": { title: "Фиалки в коробке", price: 850 },
+      "shadow-kingdom": { title: "Царство теней", price: 2400 },
+      "flower-element": { title: "Цветочная стихия", price: 3680 },
+      "flower-artifact": { title: "Цветочный артефакт", price: 2400 },
+      "flower-imaginarium": { title: "Цветочный Воображариум", price: 1800 },
+      "eco-aesthetics": { title: "Эко-эстетика", price: 2400 }
 };
 const deliveryPrices = { penza_5: 250, penza_10: 350, penza_15: 500, serdobsk_5: 250, serdobsk_10: 350, serdobsk_15: 500 };
 const deliveryLabels = { penza_5: "Пенза и район · до 5 км", penza_10: "Пенза и район · 5–10 км", penza_15: "Пенза и район · 10–15 км", serdobsk_5: "Сердобск · до 5 км", serdobsk_10: "Сердобск · 5–10 км", serdobsk_15: "Сердобск · 10–15 км" };
