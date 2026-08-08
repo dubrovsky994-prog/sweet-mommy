@@ -181,10 +181,29 @@ function writeReviews(reviews) {
   fs.writeFileSync(reviewsFile, `${JSON.stringify(reviews, null, 2)}\n`, "utf8");
 }
 
+// Vercel functions have a read-only filesystem. A review can still be saved
+// locally for the demo, but in production it is first delivered to MAX for
+// moderation instead of failing with EROFS.
+function tryWriteReviews(reviews) {
+  try {
+    writeReviews(reviews);
+    return true;
+  } catch (error) {
+    console.warn("Review was not written to the local file", { code: error.code, message: error.message });
+    return false;
+  }
+}
+
 function reviewPhotoData(photo) {
   if (!photo || typeof photo.data !== "string") return "";
   if (!/^data:image\/(jpeg|png|webp);base64,/i.test(photo.data) || photo.data.length > 520000) return "";
   return photo.data;
+}
+
+function reviewPhotoParts(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:(image\/(?:jpeg|png|webp));base64,([\s\S]+)$/i);
+  if (!match) return null;
+  return { type: match[1].toLowerCase(), buffer: Buffer.from(match[2], "base64") };
 }
 
 function requestedReviewPath(url) { return (url || "").split("?")[0] === "/api/reviews"; }
@@ -282,10 +301,14 @@ async function createPayment(payload) {
     payment_mode: "full_payment"
   });
 
+  const configuredReturnUrl = new URL(process.env.YOO_KASSA_RETURN_URL);
+  if (configuredReturnUrl.pathname === "/" || configuredReturnUrl.pathname === "") {
+    configuredReturnUrl.pathname = "/payment/success";
+  }
   const requestBody = {
     amount: { value: Number(payload.total).toFixed(2), currency: "RUB" },
     capture: true,
-    confirmation: { type: "redirect", return_url: process.env.YOO_KASSA_RETURN_URL },
+    confirmation: { type: "redirect", return_url: configuredReturnUrl.toString() },
     description: `Sweet Mommy заказ ${orderId}`,
     metadata: buildPaymentMetadata(payload, orderId)
   };
@@ -328,6 +351,47 @@ async function createPayment(payload) {
   return { demo: false, order_id: orderId, payment_id: result.id, confirmation_url: result.confirmation?.confirmation_url, status: result.status, receipt_mode: taxMode === "company" ? "yookassa" : "my_tax_manual" };
 }
 
+function yooKassaAuthHeader() {
+  const shopId = process.env.YOO_KASSA_SHOP_ID;
+  const secretKey = process.env.YOO_KASSA_SECRET_KEY;
+  if (!shopId || !secretKey) throw new Error("Онлайн-оплата ещё не подключена");
+  return `Basic ${Buffer.from(`${shopId}:${secretKey}`).toString("base64")}`;
+}
+
+function validPaymentId(value) {
+  return /^[A-Za-z0-9_-]{8,128}$/.test(String(value || ""));
+}
+
+function validOrderId(value) {
+  return /^SM-\d{8}-[A-F0-9]{6}$/i.test(String(value || ""));
+}
+
+async function getYooKassaPayment(paymentId) {
+  if (!validPaymentId(paymentId)) throw new Error("Некорректный номер платежа");
+  const response = await fetch(`https://api.yookassa.ru/v3/payments/${encodeURIComponent(paymentId)}`, {
+    headers: { Authorization: yooKassaAuthHeader() }
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    console.error("YooKassa payment status failed", { status: response.status, payment_id: paymentId, code: result.code });
+    throw new Error("Не удалось проверить статус оплаты");
+  }
+  return result;
+}
+
+async function getYooKassaPaymentByOrderId(orderId) {
+  if (!validOrderId(orderId)) throw new Error("Некорректный номер заказа");
+  const response = await fetch("https://api.yookassa.ru/v3/payments?limit=100", {
+    headers: { Authorization: yooKassaAuthHeader() }
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    console.error("YooKassa payment list failed", { status: response.status, code: result.code });
+    throw new Error("Не удалось найти платёж по номеру заказа");
+  }
+  return (result.items || []).find((payment) => payment?.metadata?.order_id === orderId) || null;
+}
+
 async function sendMaxMessageTo(text, recipientId, recipientType = "user", attachments = []) {
   const token = maxSetting("MAX_BOT_TOKEN", "bot_token");
   if (!token || !recipientId) return { demo: true, status: "max_not_configured" };
@@ -345,10 +409,36 @@ async function sendMaxMessageTo(text, recipientId, recipientType = "user", attac
   return { demo: false, status: "sent" };
 }
 
-async function sendMaxMessage(text) {
+async function sendMaxMessage(text, attachments = []) {
   const recipientId = maxSetting("MAX_RECIPIENT_ID", "recipient_id");
   const recipientType = maxSetting("MAX_RECIPIENT_TYPE", "recipient_type") === "chat" ? "chat" : "user";
-  return sendMaxMessageTo(text, recipientId, recipientType);
+  return sendMaxMessageTo(text, recipientId, recipientType, attachments);
+}
+
+async function uploadMaxReviewPhoto(dataUrl) {
+  const token = maxSetting("MAX_BOT_TOKEN", "bot_token");
+  const photo = reviewPhotoParts(dataUrl);
+  if (!token || !photo) throw new Error("Не удалось подготовить фото отзыва");
+  const apiBase = maxSetting("MAX_API_BASE_URL", "api_base") || "https://platform-api2.max.ru";
+  const uploadRequest = await fetch(`${apiBase}/uploads?type=image`, {
+    method: "POST",
+    headers: { Authorization: token }
+  });
+  const upload = await uploadRequest.json().catch(() => ({}));
+  if (!uploadRequest.ok || !upload.url) throw new Error(upload.message || upload.description || "MAX не выдал ссылку для загрузки фото");
+
+  const extension = photo.type === "image/png" ? "png" : photo.type === "image/webp" ? "webp" : "jpg";
+  const form = new FormData();
+  form.append("data", new Blob([photo.buffer], { type: photo.type }), `review.${extension}`);
+  const uploadResponse = await fetch(upload.url, { method: "POST", body: form });
+  if (!uploadResponse.ok) throw new Error("Не удалось загрузить фото отзыва в MAX");
+
+  let mediaToken = upload.token;
+  if (!mediaToken) {
+    try { mediaToken = new URL(upload.url).searchParams.get("token"); } catch { mediaToken = ""; }
+  }
+  if (!mediaToken) throw new Error("MAX не вернул идентификатор загруженного фото");
+  return { type: "image", payload: { token: mediaToken } };
 }
 
 function normalizeSmsPhone(value) {
@@ -411,14 +501,15 @@ async function sendMaxRequest(payload) {
 
 async function sendMaxReview(review) {
   const product = catalog[review.product_id];
+  const attachments = review.photo ? [await uploadMaxReviewPhoto(review.photo)] : [];
   return sendMaxMessage([
     "Новый отзыв на сайте Sweet Mommy",
     `Букет: ${product?.title || review.product_id}`,
     `Имя: ${review.name}`,
     `Оценка: ${review.rating}/5`,
     `Отзыв: ${review.text}`,
-    review.photo ? "К отзыву прикреплено фото на сайте" : "Фото к отзыву нет"
-  ].join("\n"));
+    review.photo ? "Фото прикреплено к этому сообщению" : "Фото к отзыву нет"
+  ].join("\n"), attachments);
 }
 
 const maxDialogsFile = path.join(root, "max-dialogs.json");
@@ -665,6 +756,56 @@ async function sendMaxOrder(payload, payment) {
   ].join("\n"));
 }
 
+async function processPaidPayment(paymentObject, source = "webhook") {
+  const paidOrder = orderFromPaymentMetadata(paymentObject);
+  if (!paidOrder) {
+    console.error("Paid payment has incomplete order metadata", { source, payment_id: paymentObject?.id || "" });
+    return { processed: false, reason: "metadata_missing" };
+  }
+  const payment = {
+    order_id: paymentObject.metadata.order_id || paymentObject.id,
+    payment_id: paymentObject.id || "",
+    status: paymentObject.status || "succeeded"
+  };
+  const notificationKey = payment.payment_id || payment.order_id;
+  const result = { processed: true, order_id: payment.order_id, payment_id: payment.payment_id, max: "skipped", sms: "skipped" };
+  const notificationErrors = [];
+
+  if (!notifiedMaxPaymentIds.has(notificationKey)) {
+    try {
+      const maxNotification = await sendMaxOrder(paidOrder, payment);
+      result.max = maxNotification.status || "unknown";
+      if (maxNotification.status === "sent") {
+        rememberNotification(notifiedMaxPaymentIds, notificationKey);
+        if (paymentObject.metadata.max_chat_id) scheduleReviewFollowup({ order_id: payment.order_id, chat_id: paymentObject.metadata.max_chat_id });
+      }
+    } catch (error) {
+      result.max = "error";
+      notificationErrors.push(`MAX: ${error.message}`);
+    }
+  } else {
+    result.max = "already_sent";
+  }
+
+  if (!notifiedSmsPaymentIds.has(notificationKey)) {
+    try {
+      const smsNotification = await sendPaidOrderSms(paidOrder, payment);
+      result.sms = smsNotification.status || "unknown";
+      if (smsNotification.status === "sent") rememberNotification(notifiedSmsPaymentIds, notificationKey);
+      if (smsNotification.status === "sms_not_configured") console.warn("Paid order SMS is not configured", { order_id: payment.order_id });
+    } catch (error) {
+      result.sms = "error";
+      notificationErrors.push(`SMS: ${error.message}`);
+    }
+  } else {
+    result.sms = "already_sent";
+  }
+
+  if (notificationErrors.length) console.error("Paid order notification errors", { source, order_id: payment.order_id, errors: notificationErrors });
+  else console.info("Paid order processed", { source, order_id: payment.order_id, payment_id: payment.payment_id, max: result.max, sms: result.sms });
+  return result;
+}
+
 const requestHandler = async (req, res) => {
   try {
     if (req.method === "GET" && requestedReviewPath(req.url)) {
@@ -681,13 +822,32 @@ const requestHandler = async (req, res) => {
       const text = String(payload.text || "").trim().slice(0, 1200);
       const rating = Number(payload.rating);
       if (name.length < 2 || text.length < 10 || !Number.isInteger(rating) || rating < 1 || rating > 5) return json(res, 400, { error: "Заполните имя, отзыв и оценку от 1 до 5" });
-      const reviews = readReviews();
       const review = { id: crypto.randomUUID(), product_id: payload.product_id, name, rating, text, photo: reviewPhotoData(payload.photo), created_at: new Date().toISOString() };
-      reviews.unshift(review);
-      writeReviews(reviews.slice(0, 500));
+
+      // Deliver first: production cannot persist files, so the owner must get
+      // the review (and its image) before we acknowledge it to the customer.
       let maxNotification;
-      try { maxNotification = await sendMaxReview(review); } catch (error) { maxNotification = { status: "error", error: error.message }; }
-      return json(res, 201, { review: { ...review, photo: review.photo || "" }, max_notification: maxNotification });
+      try {
+        maxNotification = await sendMaxReview(review);
+      } catch (error) {
+        console.error("Review delivery to MAX failed", { message: error.message });
+        if (process.env.VERCEL) return json(res, 502, { error: "Не удалось передать отзыв. Попробуйте ещё раз через минуту." });
+        maxNotification = { status: "error", error: error.message };
+      }
+
+      const reviews = readReviews();
+      reviews.unshift(review);
+      const published = tryWriteReviews(reviews.slice(0, 500));
+      const photoReceived = Boolean(review.photo);
+      return json(res, published ? 201 : 202, {
+        review: published ? { ...review, photo: review.photo || "" } : { ...review, photo: "" },
+        published,
+        photo_received: photoReceived,
+        max_notification: maxNotification,
+        message: published
+          ? "Спасибо! Отзыв добавлен к этому букету."
+          : `Спасибо! Отзыв${photoReceived ? " и фото" : ""} отправлены владельцу. После проверки он появится на странице букета.`
+      });
     }
     if (req.method === "POST" && req.url === "/api/max/webhook") {
       const payload = await readBody(req);
@@ -704,42 +864,26 @@ const requestHandler = async (req, res) => {
       const payload = await readBody(req);
       const paymentObject = payload.object || {};
       if (payload.event === "payment.succeeded") {
-        const paidOrder = orderFromPaymentMetadata(paymentObject);
-        if (paidOrder) {
-          const payment = {
-            order_id: paymentObject.metadata.order_id || paymentObject.id,
-            payment_id: paymentObject.id || "",
-            status: paymentObject.status || "succeeded"
-          };
-          const notificationKey = payment.payment_id || payment.order_id;
-          let notificationSent = false;
-          const notificationErrors = [];
-          if (!notifiedMaxPaymentIds.has(notificationKey)) {
-            try {
-              const maxNotification = await sendMaxOrder(paidOrder, payment);
-              if (maxNotification.status === "sent") {
-                rememberNotification(notifiedMaxPaymentIds, notificationKey);
-                notificationSent = true;
-              }
-            } catch (error) {
-              notificationErrors.push(`MAX: ${error.message}`);
-            }
-          }
-          if (!notifiedSmsPaymentIds.has(notificationKey)) {
-            try {
-              const smsNotification = await sendPaidOrderSms(paidOrder, payment);
-              if (smsNotification.status === "sent") rememberNotification(notifiedSmsPaymentIds, notificationKey);
-            } catch (error) {
-              notificationErrors.push(`SMS: ${error.message}`);
-            }
-          }
-          if (notificationErrors.length) console.error("Paid order notification errors", { order_id: payment.order_id, errors: notificationErrors });
-          if (notificationSent && paymentObject.metadata.max_chat_id) {
-            scheduleReviewFollowup({ order_id: payment.order_id, chat_id: paymentObject.metadata.max_chat_id });
-          }
-        }
+        await processPaidPayment(paymentObject, "webhook");
       }
       return json(res, 200, { ok: true });
+    }
+    if (req.method === "POST" && req.url === "/api/payment-status") {
+      const payload = await readBody(req);
+      const paymentObject = payload.payment_id
+        ? await getYooKassaPayment(payload.payment_id)
+        : await getYooKassaPaymentByOrderId(payload.order_id);
+      if (!paymentObject) return json(res, 404, { error: "Платёж по этому заказу не найден" });
+      const orderId = paymentObject.metadata?.order_id || payload.order_id || "";
+      const paid = paymentObject.status === "succeeded";
+      const notifications = paid ? await processPaidPayment(paymentObject, "customer_return") : null;
+      return json(res, 200, {
+        order_id: orderId,
+        payment_id: paymentObject.id || "",
+        status: paymentObject.status || "pending",
+        paid,
+        notifications
+      });
     }
     if (req.method === "POST" && req.url === "/api/create-payment") {
       const payload = await readBody(req);
@@ -766,7 +910,7 @@ const requestHandler = async (req, res) => {
     }
     if (req.method !== "GET" && req.method !== "HEAD") return json(res, 405, { error: "Method not allowed" });
     const requested = decodeURIComponent((req.url || "/").split("?")[0]);
-    const relative = requested === "/" ? "index.html" : requested.replace(/^\/+/, "");
+    const relative = requested === "/" || requested === "/payment/success" ? "index.html" : requested.replace(/^\/+/, "");
     const filePath = path.resolve(root, relative);
     if (!filePath.startsWith(root + path.sep)) return json(res, 403, { error: "Forbidden" });
     if (requested === "/favicon.ico") {

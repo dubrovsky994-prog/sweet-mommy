@@ -128,6 +128,7 @@ products.forEach((product) => {
 });
 
 const state = { cart: loadCart(), filter: "all" };
+const pendingPaymentStorageKey = "sweet-mommy-pending-payment-v1";
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const rub = (value) => `${new Intl.NumberFormat("ru-RU").format(value)} ₽`;
@@ -259,6 +260,81 @@ function renderCheckoutSummary() {
   $("[data-checkout-total]").textContent = zone === "outside" ? "Уточним после согласования" : rub(subtotal() + delivery);
 }
 
+function readPendingPayment() {
+  try {
+    const item = JSON.parse(localStorage.getItem(pendingPaymentStorageKey) || "null");
+    return item?.payment_id && item?.order_id ? item : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePendingPayment(payment) {
+  localStorage.setItem(pendingPaymentStorageKey, JSON.stringify({
+    payment_id: payment.payment_id,
+    order_id: payment.order_id,
+    created_at: new Date().toISOString()
+  }));
+}
+
+function clearPendingPayment() {
+  localStorage.removeItem(pendingPaymentStorageKey);
+}
+
+function showPaymentNotice(status, text, orderId = "") {
+  let notice = $("[data-payment-status-notice]");
+  if (!notice) {
+    notice = document.createElement("aside");
+    notice.className = "payment-status-notice";
+    notice.dataset.paymentStatusNotice = "";
+    notice.setAttribute("role", "status");
+    notice.setAttribute("aria-live", "polite");
+    notice.innerHTML = `<button type="button" aria-label="Закрыть уведомление" data-close-payment-notice>×</button><p data-payment-status-text></p>`;
+    document.body.append(notice);
+    notice.querySelector("[data-close-payment-notice]").addEventListener("click", () => notice.remove());
+  }
+  notice.dataset.status = status;
+  $("[data-payment-status-text]", notice).innerHTML = `${text}${orderId ? `<br><b>Заказ № ${orderId}</b>` : ""}`;
+  notice.hidden = false;
+}
+
+async function checkPendingPayment() {
+  const pendingPayment = readPendingPayment();
+  if (!pendingPayment) return false;
+  showPaymentNotice("checking", "Проверяем статус оплаты в ЮKassa…", pendingPayment.order_id);
+  try {
+    const response = await fetch("/api/payment-status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payment_id: pendingPayment.payment_id })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "Не удалось проверить оплату");
+    if (result.paid) {
+      clearPendingPayment();
+      state.cart = [];
+      saveCart();
+      renderCart();
+      showPaymentNotice("success", "Оплата получена. Заказ передан в работу, уведомление отправлено владельцу.", result.order_id || pendingPayment.order_id);
+      return true;
+    }
+    if (result.status === "canceled") {
+      clearPendingPayment();
+      showPaymentNotice("error", "Оплата была отменена. Товары остались в корзине — можно попробовать ещё раз.", result.order_id || pendingPayment.order_id);
+      return false;
+    }
+    showPaymentNotice("pending", "Платёж ещё подтверждается. Проверим его автоматически — не оформляйте заказ повторно.", result.order_id || pendingPayment.order_id);
+  } catch {
+    showPaymentNotice("error", "Не удалось проверить оплату сейчас. Если деньги списались, заказ будет подтверждён автоматически.", pendingPayment.order_id);
+  }
+  return false;
+}
+
+function checkPaymentAfterReturn() {
+  if (window.location.pathname !== "/payment/success") return;
+  [0, 3000, 9000].forEach((delay) => window.setTimeout(checkPendingPayment, delay));
+}
+
 function openCart() { $("[data-cart-drawer]").classList.add("is-open"); $("[data-cart-drawer]").setAttribute("aria-hidden", "false"); document.body.classList.add("is-locked"); }
 function closeCart() { $("[data-cart-drawer]").classList.remove("is-open"); $("[data-cart-drawer]").setAttribute("aria-hidden", "true"); document.body.classList.remove("is-locked"); }
 function openCheckout() { if (!state.cart.length) return; closeCart(); renderCheckoutSummary(); $("[data-checkout-modal]").classList.add("is-open"); $("[data-checkout-modal]").setAttribute("aria-hidden", "false"); document.body.classList.add("is-locked"); }
@@ -359,6 +435,7 @@ async function submitOrder(event) {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Не удалось создать заказ");
     if (result.confirmation_url) {
+      savePendingPayment(result);
       message.className = "form-message success";
       message.textContent = "Открываем защищённую оплату… Если переход не сработал, используйте кнопку ниже.";
       openPaymentUrl(result.confirmation_url);
@@ -480,8 +557,8 @@ async function submitReview(event) {
     if (!response.ok) throw new Error(result.error || "Не удалось отправить отзыв");
     form.reset();
     message.className = "form-message success";
-    message.textContent = "Спасибо! Отзыв добавлен к этому букету.";
-    await loadCustomerReviews(modal.dataset.product, modal);
+    message.textContent = result.message || "Спасибо! Отзыв отправлен владельцу.";
+    if (result.published) await loadCustomerReviews(modal.dataset.product, modal);
   } catch (error) {
     message.className = "form-message error";
     message.textContent = error.message || "Не удалось отправить отзыв";
@@ -841,6 +918,7 @@ function init() {
   initPwa();
   initMaxMiniApp();
   renderProducts(); renderCart();
+  checkPaymentAfterReturn();
   initPhotoPreviews();
   $("[data-lead-form]")?.addEventListener("submit", submitLead);
   $$("[data-filter]").forEach((button) => button.addEventListener("click", () => { state.filter = button.dataset.filter; $$("[data-filter]").forEach((item) => item.classList.toggle("is-active", item === button)); renderProducts(); }));
